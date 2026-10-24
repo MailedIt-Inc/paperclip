@@ -1688,8 +1688,10 @@ During controller shutdown, an already registered provider startup has a bounded
 for detachment. Its company, run, session, runner and completion-contract binding
 must still match persisted authority. The draining controller cannot checkpoint,
 publish events, submit a turn or settle the run. A new startup after the shutdown
-fence, or admission after the window expires, remains rejected. Explicit Stop
-still cancels the prepared session before detachment or prompt submission.
+fence, or admission after the window expires, remains rejected. A Stop pending
+during startup keeps cancellation and cleanup with the current owner. Shutdown
+waits at most 30 seconds for that owner to settle; it does not detach the session
+or submit a prompt while Stop is pending.
 
 Recovery restores a structured result proposal from the durable run events when
 its append survived but the active turn's session checkpoint did not. Advancing

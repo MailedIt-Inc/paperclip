@@ -336,6 +336,19 @@ export async function detachNativeSessionsForRestart(
       inactiveRunIds.push(runId);
       continue;
     }
+    const stopping = nativeSessionStartups.get(runId);
+    if (stopping?.stopRequested) {
+      // Stop owns cancellation and final cleanup. Relinquishing the transport
+      // before that owner settles can lose its stop acknowledgement.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([stopping.settled, new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new NativeCancellationPendingRecoveryError()), 30_000);
+        })]);
+      } finally { clearTimeout(timer); }
+      inactiveRunIds.push(runId);
+      continue;
+    }
     if (active.session.detachControllerForRestart === undefined) {
       unsupportedRunIds.push(runId);
       continue;
