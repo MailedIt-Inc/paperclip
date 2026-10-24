@@ -102,6 +102,12 @@ export async function runGitHubReviewCampaign(input: { executions: readonly Matr
       evidence.targetCommit = identity.commit; evidence.checkpoints.target = true;
       await runGitHubReviewFlow({ page, github, githubUsername: config.github.account, api, config, resources, evidence, signal,
         phase: checkpoint, persistResources: () => save("owned-resources.json", resources),
+        ...(typeof authentication?.authenticateGitHubJourneyRegistration === "function" ? {
+          authenticateRegistration: (tab: Page) => authentication.authenticateGitHubJourneyRegistration({ page: tab,
+            configFile: config!.authentication!.configFile, expectedAccount: config!.github.account, signal,
+            deadlineAt: Date.now() + Math.min(config!.browser.loginTimeoutMs, 120_000),
+            registerSecret: (value: string) => secrets.push(value), checkpoint: (id: string) => checkpoint(id) }),
+        } : {}),
         recordRegistrationBoundary: boundary => save("github-registration-boundary.json", boundary), checkpoint: async (id, tab) => {
         evidence.checkpoints[id] = true;
         // Authentication pages and forms are deliberately never captured.

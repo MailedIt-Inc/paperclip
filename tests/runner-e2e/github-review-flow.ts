@@ -16,6 +16,7 @@ export async function runGitHubReviewFlow(input: {
   phase(id: string): Promise<void>;
   persistResources(): Promise<void>;
   recordRegistrationBoundary?(boundary: GitHubRegistrationBoundary): Promise<void>;
+  authenticateRegistration?(page: Page): Promise<void>;
 }) {
   const { page, github, api, config, resources, evidence } = input;
   const capabilities = await api.get('/api/instance/settings/experimental');
@@ -70,7 +71,8 @@ export async function runGitHubReviewFlow(input: {
   // Manifest flow navigates the same tab. External App grants remain attended.
   evidence.assisted = true;
   await awaitJourneyCondition(async () => new URL(page.url()).hostname === "github.com", 30_000, "github_manifest_handoff_missing", input.signal);
-  const createApp = await waitForGitHubRegistrationControl(page, config.github.appOwner, config.browser.loginTimeoutMs, input.recordRegistrationBoundary);
+  const createApp = await waitForGitHubRegistrationControl(page, config.github.appOwner, config.browser.loginTimeoutMs,
+    input.recordRegistrationBoundary, input.authenticateRegistration ? () => input.authenticateRegistration!(page) : undefined);
   await page.bringToFront();
   await input.checkpoint("app_creation_consent", page);
   console.log(`[github-review-journey] Authorize creation of only ${resources.appName} in the dedicated QA browser. Install it only on ${config.github.repository}.`);

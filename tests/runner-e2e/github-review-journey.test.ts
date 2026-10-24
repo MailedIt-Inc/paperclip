@@ -23,14 +23,14 @@ describe("GitHub registration handoff", () => {
   const page = (pathname: string, password: boolean, available: boolean) => ({
     url: () => `https://github.com${pathname}?return_to=private-grant&token=never-retain`, isClosed: () => false,
     locator: (selector: string) => ({ count: async () => selector.includes('password') && password ? 1 : 0 }),
-    getByRole: () => ({ isVisible: async () => available, allTextContents: async () => ['Registration error'],
+    getByRole: (_role?: string, options?: { name?: string | RegExp }) => ({ isVisible: async () => String(options?.name).includes('Create GitHub App') && available, allTextContents: async () => ['Registration error'],
       waitFor: vi.fn(async () => { if (!available) throw new Error("control_missing"); }) }),
   });
   it("classifies a reauthentication boundary and retains no query or auth content", async () => {
     const record = vi.fn();
     await expect(waitForGitHubRegistrationControl(page('/sessions/sudo', true, false) as unknown as Page, 'fixture', 600000, record))
       .rejects.toThrow('github_registration_reauthentication_required');
-    expect(record.mock.calls.at(-1)?.[0]).toEqual({ origin: 'https://github.com', pathname: '/sessions/sudo', passwordRequired: true, oneTimeCodeRequired: false, createControlVisible: false });
+    expect(record.mock.calls.at(-1)?.[0]).toEqual({ origin: 'https://github.com', pathname: '/sessions/sudo', passwordRequired: true, oneTimeCodeRequired: false, reauthenticationRequired: true, createControlVisible: false });
     expect(JSON.stringify(record.mock.calls)).not.toMatch(/private-grant|never-retain/);
   });
   it("fails a missing creation control on an ordinary registration page", async () => {
@@ -41,10 +41,31 @@ describe("GitHub registration handoff", () => {
   });
   it("admits the ordinary creation control with a bounded render wait", async () => {
     const target = page('/settings/apps/new', false, true);
-    const control = target.getByRole();
-    target.getByRole = () => control;
+    const control = target.getByRole('button', { name: /^Create GitHub App/ });
+    const get = target.getByRole;
+    target.getByRole = (role, options) => String(options?.name).includes('Create GitHub App') ? control : get(role, options);
     await expect(waitForGitHubRegistrationControl(target as unknown as Page, 'fixture', 600000)).resolves.toBe(control);
     expect(control.waitFor).toHaveBeenCalledWith({ timeout: 30000 });
+  });
+  it("keeps passkey-first sudo at the manifest path out of authentication content diagnostics", async () => {
+    const target = page('/settings/apps/manifest', false, false), get = target.getByRole;
+    target.getByRole = (role, options) => String(options?.name).includes('Confirm access')
+      ? { ...get(role, options), isVisible: async () => true } : get(role, options);
+    const record = vi.fn();
+    await expect(waitForGitHubRegistrationControl(target as unknown as Page, 'fixture', 600000, record))
+      .rejects.toThrow('github_registration_reauthentication_required');
+    expect(record.mock.calls.at(-1)?.[0].reauthenticationRequired).toBe(true);
+    expect(record.mock.calls.at(-1)?.[0].controls).toBeUndefined();
+  });
+  it("uses a supplied ordinary reauthentication adapter once before retrying creation readiness", async () => {
+    const target = page('/settings/apps/manifest', true, false), get = target.getByRole;
+    let authenticated = false;
+    const control = { ...get(), isVisible: async () => authenticated,
+      waitFor: vi.fn(async () => { if (!authenticated) throw new Error('sudo_required'); }) };
+    target.getByRole = (role, options) => String(options?.name).includes('Create GitHub App') ? control : get(role, options);
+    const authenticate = vi.fn(async () => { authenticated = true; });
+    await expect(waitForGitHubRegistrationControl(target as unknown as Page, 'fixture', 600000, async () => {}, authenticate)).resolves.toBe(control);
+    expect(authenticate).toHaveBeenCalledOnce();
   });
 });
 
