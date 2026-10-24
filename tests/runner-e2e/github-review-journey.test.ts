@@ -8,9 +8,9 @@ import type { GitHubTaskReview } from "../../packages/shared/src/types/chat-gith
 import { verifyConnectionTarget } from "./connection-target.js";
 import { parseConnectionConfig } from "./connection-config.js";
 import type { APIRequestContext } from "@playwright/test";
-import { captureOwnedGitHubApp, readOwnedGitHubReviewRuns, type GitHubJourneyResources } from "./github-review-ownership.js";
+import { captureOwnedGitHubApp, readOwnedGitHubReviewRuns, stopOwnedGitHubReviewRun, type GitHubJourneyResources } from "./github-review-ownership.js";
 import type { ChatEndpoint } from "../../packages/shared/src/types/chat-channels.js";
-import { enterGitHubJourneyCompany, isGitHubJourneyEvidencePage } from "./github-review-browser.js";
+import { enterGitHubJourneyCompany, isGitHubJourneyEvidencePage, waitForGitHubRegistrationControl } from "./github-review-browser.js";
 import { attendGitHubJourneyAction } from "./github-review-attendance.js";
 import { PassThrough } from "node:stream";
 import type { Locator, Page } from "@playwright/test";
@@ -19,7 +19,59 @@ import { runGitHubReviewCampaign } from "./github-review-launch.js";
 import type { ConnectionApi } from "./connection-target.js";
 import { runGitHubReviewFlow } from "./github-review-flow.js";
 
+describe("GitHub registration handoff", () => {
+  const page = (pathname: string, password: boolean, available: boolean) => ({
+    url: () => `https://github.com${pathname}?return_to=private-grant&token=never-retain`, isClosed: () => false,
+    locator: (selector: string) => ({ count: async () => selector.includes('password') && password ? 1 : 0 }),
+    getByRole: () => ({ isVisible: async () => available,
+      waitFor: vi.fn(async () => { if (!available) throw new Error("control_missing"); }) }),
+  });
+  it("classifies a reauthentication boundary and retains no query or auth content", async () => {
+    const record = vi.fn();
+    await expect(waitForGitHubRegistrationControl(page('/sessions/sudo', true, false) as unknown as Page, 'fixture', 600000, record))
+      .rejects.toThrow('github_registration_reauthentication_required');
+    expect(record.mock.calls.at(-1)?.[0]).toEqual({ origin: 'https://github.com', pathname: '/sessions/sudo', passwordRequired: true, oneTimeCodeRequired: false, createControlVisible: false });
+    expect(JSON.stringify(record.mock.calls)).not.toMatch(/private-grant|never-retain/);
+  });
+  it("fails a missing creation control on an ordinary registration page", async () => {
+    await expect(waitForGitHubRegistrationControl(page('/settings/apps/new', false, false) as unknown as Page, 'fixture', 600000))
+      .rejects.toThrow('github_registration_create_control_missing');
+  });
+  it("admits the ordinary creation control with a bounded render wait", async () => {
+    const target = page('/settings/apps/new', false, true);
+    const control = target.getByRole();
+    target.getByRole = () => control;
+    await expect(waitForGitHubRegistrationControl(target as unknown as Page, 'fixture', 600000)).resolves.toBe(control);
+    expect(control.waitFor).toHaveBeenCalledWith({ timeout: 30000 });
+  });
+});
+
 describe("reused target ownership", () => {
+  it("stops a failed native retry and verifies its audited run-only acknowledgement", async () => {
+    const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
+    const failed = { ...scope, id: 'run', status: 'failed', runtimeMode: 'native', nativePhase: 'retryable_failure' };
+    const get = vi.fn().mockResolvedValueOnce(failed).mockResolvedValue({ ...failed, status: 'cancelled', costAccountingPending: true,
+      resultJson: { nativeCancellation: { schema: 'paperclip.native-cancellation.v1', runId: 'run', companyId: 'company', issueId: 'issue', scope: 'run', reasonCode: 'cancellation_run_only', dispatched: true, dispatchState: 'acknowledged', intentAuditId: 'intent', acknowledgementAuditId: 'ack' } } });
+    const post = vi.fn().mockResolvedValue({});
+    await stopOwnedGitHubReviewRun({ get, post } as unknown as ConnectionApi, 'run', scope, new AbortController().signal);
+    expect(post).toHaveBeenCalledExactlyOnceWith('/api/heartbeat-runs/run/cancel', { cancellationRequestId: expect.any(String) });
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+  it("refuses to stop a related run belonging to a different task", async () => {
+    const post = vi.fn();
+    const api = { get: async () => ({ id: 'run', companyId: 'company', agentId: 'agent', issueId: 'other', status: 'running' }), post };
+    await expect(stopOwnedGitHubReviewRun(api as unknown as ConnectionApi, 'run', { companyId: 'company', agentId: 'agent', issueId: 'issue' }, new AbortController().signal))
+      .rejects.toThrow('cleanup_run_owner_mismatch');
+    expect(post).not.toHaveBeenCalled();
+  });
+  it("does not accept cancelled status as native Stop acknowledgement", async () => {
+    const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
+    const get = vi.fn().mockResolvedValueOnce({ ...scope, id: 'run', status: 'running', runtimeMode: 'native' })
+      .mockResolvedValue({ ...scope, id: 'run', status: 'cancelled', runtimeMode: 'native' });
+    await expect(stopOwnedGitHubReviewRun({ get, post: async () => ({}) } as unknown as ConnectionApi, 'run', scope, new AbortController().signal, 1))
+      .rejects.toThrow('owned_run_cancellation_unconfirmed');
+    expect(get.mock.calls.length).toBeGreaterThan(1);
+  });
   it("admits an inherited environment before setup and still leaves actual-run verification mandatory", async () => {
     const setup = parseGitHubReviewJourneyConfig(config());
     const company = { id: setup.target.companyId, issuePrefix: "QA" };

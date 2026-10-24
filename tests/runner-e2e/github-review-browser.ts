@@ -10,6 +10,40 @@ export async function enterGitHubJourneyCompany(page: Page, origin: string, comp
   await page.waitForURL(url => url.origin === origin && url.pathname === pathname);
 }
 
+export interface GitHubRegistrationBoundary {
+  origin: string; pathname: string; passwordRequired: boolean; oneTimeCodeRequired: boolean;
+  createControlVisible: boolean;
+}
+
+/** Keep only navigation and control-presence evidence. Authentication fields,
+ * page content, query parameters, and grant payloads must stay out of reports. */
+export async function waitForGitHubRegistrationControl(page: Page, owner: string, timeoutMs: number,
+  record: (boundary: GitHubRegistrationBoundary) => Promise<void> = async () => {}) {
+  const control = page.getByRole("button", { name: new RegExp(`^Create GitHub App(?: for ${owner})?$`) });
+  const observe = async () => {
+    const url = new URL(page.url());
+    if (url.origin !== "https://github.com") throw new ConnectionFailure("github_registration_origin_mismatch");
+    const boundary = { origin: url.origin, pathname: url.pathname,
+      passwordRequired: await page.locator('input[type="password"]:visible').count() > 0,
+      oneTimeCodeRequired: await page.locator('input[autocomplete="one-time-code"]:visible').count() > 0,
+      createControlVisible: await control.isVisible() };
+    await record(boundary);
+    return boundary;
+  };
+  await observe();
+  try { await control.waitFor({ timeout: Math.min(timeoutMs, 30_000) }); }
+  catch (error) {
+    if (page.isClosed()) throw error;
+    const boundary = await observe();
+    if (boundary.passwordRequired || boundary.oneTimeCodeRequired || /\/(?:login|sessions)(?:\/|$)/.test(boundary.pathname)) {
+      throw new ConnectionBlock("awaiting_user", "github_registration_reauthentication_required");
+    }
+    throw new ConnectionFailure("github_registration_create_control_missing");
+  }
+  await observe();
+  return control;
+}
+
 /** Capture measured pages only, excluding authentication and unrelated GitHub data. */
 export function isGitHubJourneyEvidencePage(value: string, targetOrigin: string, repository: string, appSlug?: string) {
   const url = new URL(value);
