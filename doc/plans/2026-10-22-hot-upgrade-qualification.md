@@ -579,3 +579,18 @@ covering the existing two-view/reconnect/completion flow plus the agent's run-ev
 view and reload. It uses the real runner, deterministic Codex app-server and owned
 Postgres. Run `7fcdcc41-e035-4bca-88ea-0bc079083b03` completed once. This remains
 browser evidence, not live-harness or hosted-upgrade qualification.
+
+### Agent Detail reader isolation (2026-10-24)
+
+The next transcript review found that one native commit signal restarted both
+Agent Detail history readers. Event history and shell logs now refresh separately
+in both page variants. Each reader finishes its current page and coalesces
+terminal notifications into one follow-up. Four regressions hold either reader
+while the other receives repeated updates; all fail on the preceding code and
+pass with the correction. The first fixture omitted the required agent ID; the
+corrected fixture was replayed against both implementations before acceptance.
+All 43 focused page/transcript tests, UI typecheck and token gates pass. The actual
+native two-view/reconnect/reload and Agent Detail journey passes in 46.1 seconds,
+with real Runner, deterministic Codex app-server and disposable Postgres. Run
+`b7259b33-bdae-402c-aa25-cc2d827ff454` completed once with one final business comment.
+This result remains distinct from hosted upgrade qualification.
