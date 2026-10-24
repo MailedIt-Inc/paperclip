@@ -590,7 +590,8 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
     activeProviderTurnId,
     providerSettled:
       activeProviderTurnId === null && state.ambiguousTurnStartPending !== true
-      && state.providerExitUnconfirmed !== true,
+      && state.providerExitUnconfirmed !== true
+      && state.lifecycle !== "stop_receipts_pending",
   };
 }
 
@@ -2258,7 +2259,15 @@ function assertMaintenanceBinding(
   identity: DurableRecoveryIdentity,
   providerSessionId: string,
   allowRestoringOpen = false,
+  allowStopping = false,
 ) {
+  const stopping = allowStopping && state.provider.lifecycle === "stop_receipts_pending"
+    && state.runner.lifecycle !== "suspended"
+    && Array.isArray(state.control.commands)
+    && state.control.commands.some(command => {
+      const row = record(command);
+      return row.type === "turn.stop" && row.status === "pending";
+    });
   if (
     !recoveryIdentityMatches(record(state.control.identity), identity) ||
     !recoveryIdentityMatches(state.runner, identity) ||
@@ -2274,11 +2283,11 @@ function assertMaintenanceBinding(
     Object.keys(record(record(state.provider.toolBridge).pending)).length !==
       0 ||
     state.provider.ambiguousTurnStartPending === true ||
-    !(
+    !(stopping || (
       allowRestoringOpen
         ? ["turn_active", "prepared", "session_open"]
         : ["turn_active", "prepared"]
-    ).includes(String(state.provider.lifecycle))
+    ).includes(String(state.provider.lifecycle)))
   )
     throw maintenanceDenied();
 }
@@ -2726,6 +2735,7 @@ async function settleRetainedRunnerdSessionOwned(
           input.identity,
           input.providerSessionId,
           epochRestoresProvider,
+          true,
         );
         const provider = providerDrainStateFromSnapshot(state.provider);
         if (!terminalOnly && !terminalQueued && provider.providerSettled) {

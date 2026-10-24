@@ -637,7 +637,10 @@ Repeated stop commands and executor restart preserve the same receipt events.
 A durable `stop_receipts_pending` fence precedes consumption of shutdown output.
 A failed or interrupted drain keeps that fence and the original turn identity.
 Stop retry and provider restart cannot certify only a remaining output suffix;
-explicit reconciliation is required.
+explicit reconciliation is required. An already owned maintenance stop can
+observe this transient state while its stop command is pending. That observation
+is never settlement proof or permission to admit another maintenance attempt;
+initial admission and final proof still reject the pending fence.
 
 Physical exit does not create a usage receipt or a turn terminal. Missing,
 invalid, or incomplete evidence cannot establish complete accounting. This
