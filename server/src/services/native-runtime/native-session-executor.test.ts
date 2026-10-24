@@ -49,6 +49,7 @@ import {
   validatePrpStructuredRunResult,
   validatePrpEvent,
   parseNativeExecutionInput,
+  executeNativeSession,
   type NativeExecutionInputV1,
   type NativeExecutionInputV3,
   type NativeExecutionInput,
@@ -5656,6 +5657,10 @@ function leaseDb(
                   agentId: boundExecution.binding.agentId,
                   companyId: boundExecution.binding.companyId,
                   nativeIssueId: boundExecution.binding.issueId,
+                  nativeSessionId: boundExecution.session.normalizedSessionId ?? `session-${boundExecution.binding.runId}`,
+                  runnerInstanceId: "runner",
+                  completionContractId: boundExecution.completionContract.id,
+                  completionContractSha256: boundExecution.completionContract.sha256,
                   resultJson: runResultJson,
                   runnerProfileJson,
                   runtimeMode: "native",
@@ -5853,6 +5858,59 @@ describe("native startup cancellation fence", () => {
 });
 
 describe("native startup restart detachment", () => {
+  it.each([false, true])("bounds read-only startup admission during drain (deadline expired: %s)", async (expired) => {
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = `restart-real-admission-${expired}`;
+    restarting.session.normalizedSessionId = "restart-real-admission-session";
+    const identity = { ...restarting.binding, sessionId: restarting.session.normalizedSessionId };
+    let release!: () => void, started!: () => void;
+    const opening = new Promise<void>(resolve => { release = resolve; });
+    const pending = new Promise<void>(resolve => { started = resolve; });
+    const detach = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const startTurn = vi.fn();
+    const backend = {
+      descriptor: async () => ({ kind: "mock" as const, name: "startup-drain", version: "1",
+        capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+        runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }),
+      openSession: vi.fn(async () => {
+        started(); await opening;
+        return { identity: () => identity, detachControllerForRestart: detach, close, startTurn,
+          snapshot: async () => ({ sessionId: identity.sessionId, identity, backendKind: "mock" as const }),
+        };
+      }),
+    };
+    let runtimeError: unknown;
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      try { return await executeNativeSession({ ...options, onSessionAdmission: undefined }); } catch (error) { runtimeError = error; throw error; }
+    });
+    const outcome = executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting,
+      runnerInstanceId: "runner", backend: backend as never }).catch(error => error);
+    await Promise.race([pending, outcome.then(error => { throw runtimeError ?? error; })]);
+    if (expired) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const shutdown = detachNativeSessionsForRestart([restarting.binding.runId]).catch(error => error);
+    try {
+      if (expired) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await shutdown).toMatchObject({ message: "native_restart_startup_not_ready" });
+        vi.useRealTimers();
+      } else {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      release();
+      expect(await outcome).toBeInstanceOf(NativeControllerDetachedForRestartError);
+      if (expired) {
+        expect(detach).not.toHaveBeenCalled();
+        expect(close).toHaveBeenCalledWith({ reason: "native control-plane run admission failed" });
+      } else {
+        expect(await shutdown).toMatchObject({ detachedRunIds: [restarting.binding.runId], inactiveRunIds: [] });
+        expect(detach).toHaveBeenCalledOnce();
+        expect(close).not.toHaveBeenCalledWith({ reason: "native control-plane run admission failed" });
+      }
+      expect(backend.openSession).toHaveBeenCalledOnce();
+      expect(startTurn).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); release(); await outcome; await shutdown; }
+  });
   it("waits for a checkpointed governed settlement before relinquishing its controller", async () => {
     const restarting = structuredClone(execution);
     restarting.binding.runId = "restart-governed-settlement";
@@ -6010,18 +6068,13 @@ describe("native startup restart detachment", () => {
     }
   });
 
-  it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
+  it("rejects an entirely new startup after the run has been fenced for shutdown", async () => {
     const restarting = structuredClone(execution);
-    restarting.binding.runId = "restart-during-session-open";
-    const detach = vi.fn(async () => undefined);
+    restarting.binding.runId = "restart-new-startup-after-drain";
     await expect(detachNativeSessionsForRestart([restarting.binding.runId])).resolves.toMatchObject({ inactiveRunIds: [restarting.binding.runId] });
-    state.execute.mockReset().mockImplementationOnce(async (options) => {
-      await options.onSession({ detachControllerForRestart: detach });
-      expect(detach).toHaveBeenCalledOnce();
-      await options.onSession(null);
-      throw new Error("detachment closed the old event stream");
-    });
+    state.execute.mockReset();
     await expect(executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner" })).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+    expect(state.execute).not.toHaveBeenCalled();
   });
 });
 

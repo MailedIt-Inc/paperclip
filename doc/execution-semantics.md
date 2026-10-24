@@ -1683,6 +1683,14 @@ controller must recover it through the authenticated ownership checks. This
 preserves active work and queued messages without treating a server restart as
 user cancellation.
 
+During controller shutdown, an already registered provider startup has a bounded
+30-second window to finish read-only run admission and publish its exact session
+for detachment. Its company, run, session, runner and completion-contract binding
+must still match persisted authority. The draining controller cannot checkpoint,
+publish events, submit a turn or settle the run. A new startup after the shutdown
+fence, or admission after the window expires, remains rejected. Explicit Stop
+still cancels the prepared session before detachment or prompt submission.
+
 Recovery restores a structured result proposal from the durable run events when
 its append survived but the active turn's session checkpoint did not. Advancing
 the replay cursor must preserve that proposal for the exact run, session, source,
