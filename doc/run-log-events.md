@@ -624,3 +624,18 @@ write the warning must not replace the provider outcome or stop lease release.
 cannot apply company export settings. Its payload contains only a closed reason
 and the settings revision. It carries no endpoint, credential, secret reference
 or resolver error. Recording the diagnostic never contacts a destination.
+
+## Native Codex stop receipts
+
+At `turn.stop`, the owned Codex process must exit before its remaining output
+is drained. The drain retains only provider-validated usage, historical usage
+baseline diagnostics, and turn terminals. It has the existing shutdown grace,
+message count, and byte limits. It does not dispatch tools, publish trailing
+messages, or propose another work result. The retained receipts and the cleared active turn identity are saved together
+before the stop command returns.
+Repeated stop commands and executor restart preserve the same receipt events.
+
+Physical exit does not create a usage receipt or a turn terminal. Missing,
+invalid, or incomplete evidence cannot establish complete accounting. This
+change preserves new shutdown receipts; it does not reconstruct receipts
+already lost by an older release or change budget and pause controls.

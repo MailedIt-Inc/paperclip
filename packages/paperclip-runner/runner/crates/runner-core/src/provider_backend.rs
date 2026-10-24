@@ -3205,6 +3205,17 @@ impl CodexCommandExecutor {
                 "failed to prove provider termination at the suspension boundary",
             ));
         }
+        let receipts = self
+            .provider
+            .as_mut()
+            .map(CodexProvider::drain_shutdown_receipts)
+            .transpose()
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to retain Codex shutdown receipts: {error}"
+                ))
+            })?
+            .unwrap_or_default();
         self.provider = None;
 
         let identity = self.event_identity()?;
@@ -3212,6 +3223,10 @@ impl CodexCommandExecutor {
             .state
             .as_mut()
             .expect("Codex state remains available after provider termination");
+        for (method, params) in receipts {
+            let events = normalize_provider_notification(state, &method, &params)?;
+            state.extend_terminal_events(events)?;
+        }
         if provider_turn_id.is_some() {
             state.settle_active_provider_turn_identity()?;
         }
