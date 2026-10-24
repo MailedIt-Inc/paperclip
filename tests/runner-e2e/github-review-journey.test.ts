@@ -23,7 +23,7 @@ describe("GitHub registration handoff", () => {
   const page = (pathname: string, password: boolean, available: boolean) => ({
     url: () => `https://github.com${pathname}?return_to=private-grant&token=never-retain`, isClosed: () => false,
     locator: (selector: string) => ({ count: async () => selector.includes('password') && password ? 1 : 0 }),
-    getByRole: () => ({ isVisible: async () => available,
+    getByRole: () => ({ isVisible: async () => available, allTextContents: async () => ['Registration error'],
       waitFor: vi.fn(async () => { if (!available) throw new Error("control_missing"); }) }),
   });
   it("classifies a reauthentication boundary and retains no query or auth content", async () => {
@@ -34,8 +34,10 @@ describe("GitHub registration handoff", () => {
     expect(JSON.stringify(record.mock.calls)).not.toMatch(/private-grant|never-retain/);
   });
   it("fails a missing creation control on an ordinary registration page", async () => {
-    await expect(waitForGitHubRegistrationControl(page('/settings/apps/new', false, false) as unknown as Page, 'fixture', 600000))
+    const record = vi.fn();
+    await expect(waitForGitHubRegistrationControl(page('/settings/apps/manifest', false, false) as unknown as Page, 'fixture', 600000, record))
       .rejects.toThrow('github_registration_create_control_missing');
+    expect(record.mock.calls.at(-1)?.[0].controls.alerts).toEqual(['Registration error']);
   });
   it("admits the ordinary creation control with a bounded render wait", async () => {
     const target = page('/settings/apps/new', false, true);

@@ -37,7 +37,8 @@ export async function stopOwnedGitHubReviewRun(api: Pick<ConnectionApi, "get" | 
     return stopped.status === "cancelled" && intent?.schema === "paperclip.native-cancellation.v1"
       && intent.runId === runId && intent.companyId === scope.companyId && intent.issueId === scope.issueId
       && intent.scope === "run" && intent.reasonCode === "cancellation_run_only" && intent.dispatched === true
-      && intent.dispatchState === "acknowledged" && Boolean(intent.intentAuditId) && Boolean(intent.acknowledgementAuditId);
+      && intent.dispatchState === "acknowledged" && typeof intent.intentAuditId === "string" && intent.intentAuditId.length > 0
+      && typeof intent.acknowledgementAuditId === "string" && intent.acknowledgementAuditId.length > 0;
   }, timeoutMs, "owned_run_cancellation_unconfirmed", signal, "failed");
 }
 

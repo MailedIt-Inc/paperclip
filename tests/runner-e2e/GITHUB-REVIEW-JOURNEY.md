@@ -91,8 +91,10 @@ manual cleanup. Never delete by a guessed name or broad account search.
 
 Registration render waits are bounded separately from attended confirmation.
 The driver retains only the GitHub origin/path and control-presence flags when
-the creation control is missing. It excludes query parameters and authentication
-content. Reauthentication is a setup boundary, not evidence that an App exists.
+the creation control is missing. On a known registration error page without auth
+fields, it also retains headings, button labels, and alerts. It excludes query
+parameters and authentication content. Reauthentication is a setup boundary,
+not evidence that an App exists.
 Cleanup also stops failed native runs that still own a retry, and requires the
 normal run-only Stop acknowledgement. It never clears pending accounting debt.
 

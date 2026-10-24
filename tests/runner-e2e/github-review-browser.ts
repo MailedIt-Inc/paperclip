@@ -13,6 +13,7 @@ export async function enterGitHubJourneyCompany(page: Page, origin: string, comp
 export interface GitHubRegistrationBoundary {
   origin: string; pathname: string; passwordRequired: boolean; oneTimeCodeRequired: boolean;
   createControlVisible: boolean;
+  controls?: { headings: string[]; buttons: string[]; alerts: string[] };
 }
 
 /** Keep only navigation and control-presence evidence. Authentication fields,
@@ -20,13 +21,18 @@ export interface GitHubRegistrationBoundary {
 export async function waitForGitHubRegistrationControl(page: Page, owner: string, timeoutMs: number,
   record: (boundary: GitHubRegistrationBoundary) => Promise<void> = async () => {}) {
   const control = page.getByRole("button", { name: new RegExp(`^Create GitHub App(?: for ${owner})?$`) });
-  const observe = async () => {
+  const observe = async (includeErrorControls = false) => {
     const url = new URL(page.url());
     if (url.origin !== "https://github.com") throw new ConnectionFailure("github_registration_origin_mismatch");
-    const boundary = { origin: url.origin, pathname: url.pathname,
+    const boundary: GitHubRegistrationBoundary = { origin: url.origin, pathname: url.pathname,
       passwordRequired: await page.locator('input[type="password"]:visible').count() > 0,
       oneTimeCodeRequired: await page.locator('input[autocomplete="one-time-code"]:visible').count() > 0,
       createControlVisible: await control.isVisible() };
+    if (includeErrorControls && !boundary.passwordRequired && !boundary.oneTimeCodeRequired
+      && ["/settings/apps/new", "/settings/apps/manifest"].includes(url.pathname)) {
+      boundary.controls = { headings: await page.getByRole("heading").allTextContents(),
+        buttons: await page.getByRole("button").allTextContents(), alerts: await page.getByRole("alert").allTextContents() };
+    }
     await record(boundary);
     return boundary;
   };
@@ -34,7 +40,7 @@ export async function waitForGitHubRegistrationControl(page: Page, owner: string
   try { await control.waitFor({ timeout: Math.min(timeoutMs, 30_000) }); }
   catch (error) {
     if (page.isClosed()) throw error;
-    const boundary = await observe();
+    const boundary = await observe(true);
     if (boundary.passwordRequired || boundary.oneTimeCodeRequired || /\/(?:login|sessions)(?:\/|$)/.test(boundary.pathname)) {
       throw new ConnectionBlock("awaiting_user", "github_registration_reauthentication_required");
     }
