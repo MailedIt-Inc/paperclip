@@ -132,7 +132,7 @@ remain attached to the exact candidate revisions on the PRs.
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | The scoped rerun passed after an earlier browser fixture cancellation hit a lock timeout; CI is green for this revision. Synthetic execution does not qualify Codex/Claude. |
 | Server | Refreshed recovery, renewal and plugin-adoption suites: 43 passed, five optional profiles skipped. The subsequent liveness-pool fix passed all 822 native executor/renewal tests with real Postgres. Saturated application-pool, cancelled row-lock wait, expiry-during-lock and natural 60-second claim-lifetime regressions passed. | `57278aa4aa11e3106d645615632571a33764eff5` has passing CI and Greptile 5/5 with no unresolved findings. An earlier unchanged cleanup-page failure is retained. Hosted admission/continuity remains outstanding. |
 | Qualification | 80 focused tests, the separately executed real-Postgres observer and both embedded-database ownership tests in Linux pass. `29606367add9d6bc0fbc5ae86f8b41ac9392cb61` has passing CI and Greptile 5/5. Short and full 300-second immutable A→B→A startup smokes passed, with zero agent turns. | Active A/B/A, real migration change, natural stale-owner partition, representative concurrent admission and hosted proof remain outstanding. Local Linux ownership proof does not qualify a hosted agent. |
-| Transcript delivery | Code revision `09d1590432` has Greptile 5/5; the native notification correction passes 73 focused tests, UI typecheck, token gates and the native two-view/reconnect/reload journey. Earlier native and legacy browser journeys and 37 delivery regressions pass. | Its first CI attempt failed the unchanged cleanup-pagination timing test; the unchanged suite passes all 14 tests in local Linux. Final revision checks remain the PR gate. Deterministic browser dependencies are not live-harness evidence. |
+| Transcript delivery | Native notification and per-run catch-up isolation corrections pass 75 focused tests, UI typecheck, token gates and the native two-view/reconnect/reload journey. Earlier native and legacy browser journeys and 37 delivery regressions pass. | An earlier CI attempt failed the unchanged cleanup-pagination timing test; the unchanged suite passes all 14 tests in local Linux and passes the next CI run. Final revision checks and review remain the PR gate. Deterministic browser dependencies are not live-harness evidence. |
 
 The supervisor observes HTTP readiness, natural ownership acquisition,
 authenticated attachment, resumed canonical ingestion, and backlog settlement
@@ -552,3 +552,17 @@ database work and registration of the following deadline. The same unchanged
 suite passes all 14 tests in the isolated Linux container. The failed CI attempt
 is retained and a bounded shard retry was requested; neither test assertions nor
 production scheduling were weakened. Final CI status remains visible on the PR.
+
+### Independent native catch-up (2026-10-24)
+
+Review subsequently found that a run's live notifications restarted the shared
+history effect, aborting slow historical reads for sibling runs. Live catch-up
+now addresses only the affected run. In-flight reads and retry timers are bounded
+per run; terminal notifications coalesce into one follow-up read without aborting
+the current request. Both regression tests fail against the preceding code and
+pass after the correction. One holds two historical pages while a sibling receives
+repeated commit and terminal notifications; the other verifies terminal catch-up
+does not abort or overlap a request. All 75 focused tests, UI typecheck and token
+gates pass. The native browser journey passes again (39.6 seconds, 51.9 seconds
+including setup), including two views, company changes, socket recovery, terminal
+catch-up, reload and exactly one business comment.
