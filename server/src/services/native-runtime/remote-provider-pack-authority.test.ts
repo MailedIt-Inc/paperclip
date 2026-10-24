@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, symlinkSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
+import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 
 const directories: string[] = [];
@@ -99,4 +99,23 @@ it.each([{}, { version: "0.0.0", digest: "not-a-sha256" }])("rejects an invalid 
   const saved = JSON.parse(readFileSync(path, "utf8"));
   writeFileSync(path, JSON.stringify({ ...saved, runnerArtifact }));
   expect(() => resolveRemoteProviderPackAuthority({ ...input, reattach: true })).toThrow("saved provider pack authority");
+});
+
+it("keeps admitted session ownership with the caller if receipt storage or its warning fails", async () => {
+  const { input, path } = fixture();
+  mkdirSync(path);
+  const authority = resolveRemoteProviderPackAuthority(input);
+  const warning = vi.fn(() => { throw new Error("log unavailable"); });
+  await expect(recordAdmittedRemoteProviderPack(authority, warning)).resolves.toBe(false);
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining("could not save remote release authority"));
+  expect(() => resolveRemoteProviderPackAuthority({ ...input, reattach: true })).toThrow("saved provider pack authority");
+});
+it("retains the original projectless lease across warm run placeholders but rejects a different real workspace", () => {
+  const { input } = fixture();
+  const first = { ...binding, workspaceId: providerPackWorkspaceId("run-1", "run-1", "original-lease") };
+  resolveRemoteProviderPackAuthority({ ...input, binding: first }).verified();
+  const next = { ...binding, workspaceId: providerPackWorkspaceId("run-2", "run-2", "original-lease") };
+  expect(resolveRemoteProviderPackAuthority({ ...input, binding: next, reattach: true }).manifest).toEqual(manifest("a"));
+  const changed = { ...binding, workspaceId: providerPackWorkspaceId("project-workspace", "run-2", "original-lease") };
+  expect(() => resolveRemoteProviderPackAuthority({ ...input, binding: changed, reattach: true })).toThrow("does not match this execution");
 });

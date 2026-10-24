@@ -376,7 +376,12 @@ passes authenticated admission, the controller saves its manifest and runner
 binary identity in `provider-pack-authority.json`. The receipt binds the company,
 agent, workspace, session, runner instance, environment lease, remote working
 directory, and provider descriptor. It stays in private controller state, outside
-guest workspace and harness backup directories.
+guest workspace and harness backup directories. Projectless runs use their
+original environment lease as the workspace identity because each run otherwise
+has a new workspace placeholder. Real workspace identities still require an exact
+match. A receipt write failure warns and returns the admitted session to its
+normal owner; it does not discard the live session handle. Future recovery still
+fails closed without matching authority.
 
 Exact process reattachment uses that saved release authority. It still verifies
 the full remote pack, runner protocol and capabilities, exact process identity,

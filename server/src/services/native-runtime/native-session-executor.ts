@@ -1,4 +1,4 @@
-import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
+import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -12039,6 +12039,25 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteBinary = remoteRuntimeRoot
     ? posix.join(remoteRuntimeRoot, "bin", "paperclip-runnerd")
     : null;
+  let currentProviderPackManifest: RemoteProviderPackManifest | undefined;
+  const resolveCurrentProviderPackManifest = () => {
+    if (currentProviderPackManifest) return currentProviderPackManifest;
+    currentProviderPackManifest = (() => {
+      if (useBundledRemoteImageAssets) {
+        return bundledClaudeManifest && (remoteClaudeTarget === "linux-x64" || remoteClaudeTarget === "linux-arm64")
+          ? readBundledRemoteProviderPackManifest(bundledClaudeManifest, remoteClaudeTarget)
+          : readBundledRemoteProviderPackManifest();
+      }
+      if (!configuredProviderPackRoot || !existsSync(configuredProviderPackRoot)
+        || !lstatSync(configuredProviderPackRoot).isDirectory()) {
+        throw new Error("runner_remote_provider_artifact_incompatible: configure PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH with the build-owned provider pack");
+      }
+      return readRemoteProviderPackManifest(configuredProviderPackRoot);
+    })();
+    return currentProviderPackManifest;
+  };
+  const reattachProviderPack = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
+  if (requiresRemoteProviderPack && !reattachProviderPack) resolveCurrentProviderPackManifest();
   // The transport hashes runnerBinary on the controller before an external
   // launcher starts runnerd. Keep that artifact identity in the controller's
   // filesystem; the remote launcher separately owns the sandbox command path.
@@ -12053,28 +12072,14 @@ async function createRunnerdBackendWithinSessionClaim(
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
     stateDirectory: root,
     binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-      workspaceId: input.execution.binding.executionWorkspaceId === input.execution.binding.runId
-        ? effectiveEnvironmentLeaseId : input.execution.binding.executionWorkspaceId, sessionId: nativeSessionKey(input.execution),
+      workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
       runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
       remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider) },
     reattach,
     runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
-    current: () => {
-      if (useBundledRemoteImageAssets) {
-        return bundledClaudeManifest && (remoteClaudeTarget === "linux-x64" || remoteClaudeTarget === "linux-arm64")
-          ? readBundledRemoteProviderPackManifest(bundledClaudeManifest, remoteClaudeTarget)
-          : readBundledRemoteProviderPackManifest();
-      }
-      if (!configuredProviderPackRoot || !existsSync(configuredProviderPackRoot)
-        || !lstatSync(configuredProviderPackRoot).isDirectory()) {
-        throw new Error("runner_remote_provider_artifact_incompatible: configure PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH with the build-owned provider pack");
-      }
-      return readRemoteProviderPackManifest(configuredProviderPackRoot);
-    },
+    current: resolveCurrentProviderPackManifest,
   }) : null;
-  let providerPackAuthority = selectProviderPackAuthority(
-    input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined,
-  );
+  let providerPackAuthority = selectProviderPackAuthority(reattachProviderPack);
   let expectedProviderPackManifest = providerPackAuthority?.manifest ?? null;
   let providerPackVerified = false;
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
@@ -13622,20 +13627,22 @@ async function createRunnerdBackendWithinSessionClaim(
     priorAuthorityEpoch.revoke();
   }
   sessionToolAuthorityEpochs.set(sessionScopeId, authorityEpoch);
-  const recordAdmittedProviderPack = () => {
-    if (providerPackVerified) providerPackAuthority?.verified();
+  const recordAdmittedProviderPack = async () => {
+    if (providerPackVerified && providerPackAuthority) {
+      await recordAdmittedRemoteProviderPack(providerPackAuthority, message => input.onLog?.("stderr", message));
+    }
   };
   return {
     bindManagedSession: wrapManagedSession,
     descriptor: () => backend.descriptor(),
     openSession: async (sessionInput) => {
       const session = await backend.openSession(sessionInput);
-      recordAdmittedProviderPack();
+      await recordAdmittedProviderPack();
       return wrapManagedSession(session);
     },
     recoverSession: async (snapshot, options) => {
       const result = backend.recoverSession ? await backend.recoverSession(snapshot, options) : { recovered: false, reason: "driver does not support recovery" };
-      if (result.session) recordAdmittedProviderPack();
+      if (result.session) await recordAdmittedProviderPack();
       return result.session ? { ...result, session: wrapManagedSession(result.session) } : result;
     },
     openReplacementSession: async (sessionInput) => {
@@ -13646,7 +13653,7 @@ async function createRunnerdBackendWithinSessionClaim(
         { parentName: "native.session.execute" },
       );
       const session = await backend.openSession(sessionInput);
-      recordAdmittedProviderPack();
+      await recordAdmittedProviderPack();
       return wrapManagedSession(session);
     },
   } satisfies NativeSessionBackend & { bindManagedSession(session: NativeSession): NativeSession };

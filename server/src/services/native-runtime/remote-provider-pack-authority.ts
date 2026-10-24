@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { redactSensitiveText } from "../../redaction.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 
 export type ProviderPackBinding = {
@@ -83,4 +84,24 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
       }
     },
   };
+}
+
+export function providerPackWorkspaceId(workspaceId: string, runId: string, environmentLeaseId: string): string {
+  return workspaceId === runId ? environmentLeaseId : workspaceId;
+}
+
+export async function recordAdmittedRemoteProviderPack(
+  authority: { verified: () => void },
+  onWarning: (message: string) => void | Promise<void>,
+): Promise<boolean> {
+  try {
+    authority.verified();
+    return true;
+  } catch (error) {
+    const reason = redactSensitiveText(error instanceof Error ? error.message : String(error)).slice(-1_024);
+    try {
+      await onWarning(`[paperclip-runner] could not save remote release authority; recovery still requires a verified receipt or current release artifacts: ${reason}\n`);
+    } catch {}
+    return false;
+  }
 }
