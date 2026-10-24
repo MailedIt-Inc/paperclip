@@ -1132,6 +1132,7 @@ impl CodexProviderState {
                     | "turn_active"
                     | "provider_exited"
                     | "reconciliation_required"
+                    | "stop_receipts_pending"
                     | "closed"
             )
             || self
@@ -2308,11 +2309,12 @@ impl CodexCommandExecutor {
 
     fn ensure_provider(&mut self) -> Result<&mut CodexProvider, DurableRunnerError> {
         self.restore_provider_if_needed()?;
-        if self
-            .state
-            .as_ref()
-            .is_some_and(|state| state.lifecycle == "reconciliation_required")
-        {
+        if self.state.as_ref().is_some_and(|state| {
+            matches!(
+                state.lifecycle.as_str(),
+                "reconciliation_required" | "stop_receipts_pending"
+            )
+        }) {
             return Err(DurableRunnerError::invalid(
                 "Codex provider session requires explicit reconciliation and a fresh session",
             ));
@@ -3177,6 +3179,15 @@ impl CodexCommandExecutor {
         &mut self,
         reason: &str,
     ) -> Result<CommandExecution, DurableRunnerError> {
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.lifecycle == "stop_receipts_pending")
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex shutdown receipts require explicit reconciliation",
+            ));
+        }
         self.restore_provider_if_needed()?;
         let state = self.state.as_ref();
         // An unprepared or permanently closed executor cannot become a
@@ -3205,10 +3216,15 @@ impl CodexCommandExecutor {
                 "failed to prove provider termination at the suspension boundary",
             ));
         }
+        self.state
+            .as_mut()
+            .expect("Codex state remains available after provider termination")
+            .lifecycle = "stop_receipts_pending".to_owned();
+        self.save_state()?;
         let receipts = self
             .provider
-            .as_mut()
-            .map(CodexProvider::drain_shutdown_receipts)
+            .take()
+            .map(|mut provider| provider.drain_shutdown_receipts())
             .transpose()
             .map_err(|error| {
                 DurableRunnerError::invalid(format!(
@@ -4556,23 +4572,23 @@ impl CommandExecutor for CodexCommandExecutor {
         });
         let outcome = (|| {
             self.restore()?;
-            if self
-                .state
-                .as_ref()
-                .is_some_and(|state| state.lifecycle == "reconciliation_required")
-                && !matches!(
-                    command.command_type.as_str(),
-                    "session.snapshot"
-                        | "session.close"
-                        | "session.destroy"
-                        | "runner.drain"
-                        | "runner.suspend"
-                        | "runner.shutdown"
-                        | "turn.interrupt"
-                        | "run.cancel"
-                        | "turn.stop"
+            if self.state.as_ref().is_some_and(|state| {
+                matches!(
+                    state.lifecycle.as_str(),
+                    "reconciliation_required" | "stop_receipts_pending"
                 )
-            {
+            }) && !matches!(
+                command.command_type.as_str(),
+                "session.snapshot"
+                    | "session.close"
+                    | "session.destroy"
+                    | "runner.drain"
+                    | "runner.suspend"
+                    | "runner.shutdown"
+                    | "turn.interrupt"
+                    | "run.cancel"
+                    | "turn.stop"
+            ) {
                 return Err(DurableRunnerError::invalid(
                     "Codex provider session requires explicit reconciliation and a fresh session",
                 ));

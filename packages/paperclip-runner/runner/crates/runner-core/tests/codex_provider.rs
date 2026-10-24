@@ -4563,6 +4563,71 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
 }
 
 #[test]
+fn durable_stop_receipt_limit_remains_fenced_across_retry_and_restart() {
+    let directory = temporary_directory("stop-receipt-overflow");
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor.execute(&command("prepare", 1, "run.prepare", json!({
+        "provider": provider_config(&directory, &["--hold-turn", "--interrupt-usage-count", "1025"]),
+    }))).unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Retain every usage receipt."}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("interrupt", 4, "turn.interrupt", json!({})))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while call_count(&directory, "interrupt-receipts-written") == 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(executor
+        .execute(&command("stop", 5, "turn.stop", json!({})))
+        .is_err());
+    assert!(
+        executor
+            .execute(&command("repeat-stop", 6, "turn.stop", json!({})))
+            .is_err(),
+        "a failed drain must not certify only the remaining suffix"
+    );
+    assert!(executor
+        .execute(&command(
+            "retry-turn",
+            7,
+            "turn.start",
+            json!({"text": "Do not replay."})
+        ))
+        .is_err());
+    let retained = fs::read(directory.join("codex-provider-state.json")).unwrap();
+    let state: Value = serde_json::from_slice(&retained).unwrap();
+    assert_eq!(state["lifecycle"], "stop_receipts_pending");
+    assert_eq!(state["activeProviderTurnId"], "provider-turn-1");
+    executor.shutdown().unwrap();
+    drop(executor);
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    assert!(recovered
+        .execute(&command("cold-stop", 8, "turn.stop", json!({})))
+        .is_err());
+    assert_eq!(
+        fs::read(directory.join("codex-provider-state.json")).unwrap(),
+        retained
+    );
+    assert_eq!(call_count(&directory, "thread/start"), 1);
+    assert_eq!(call_count(&directory, "thread/resume"), 0);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_stop_without_a_provider_terminal_does_not_invent_receipts() {
     let directory = temporary_directory("stop-without-receipts");
     let runner_config = durable_config(&directory);

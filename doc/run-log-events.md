@@ -634,6 +634,10 @@ message count, and byte limits. It does not dispatch tools, publish trailing
 messages, or propose another work result. The retained receipts and the cleared active turn identity are saved together
 before the stop command returns.
 Repeated stop commands and executor restart preserve the same receipt events.
+A durable `stop_receipts_pending` fence precedes consumption of shutdown output.
+A failed or interrupted drain keeps that fence and the original turn identity.
+Stop retry and provider restart cannot certify only a remaining output suffix;
+explicit reconciliation is required.
 
 Physical exit does not create a usage receipt or a turn terminal. Missing,
 invalid, or incomplete evidence cannot establish complete accounting. This
