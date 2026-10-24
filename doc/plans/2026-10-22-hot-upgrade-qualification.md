@@ -566,3 +566,16 @@ does not abort or overlap a request. All 75 focused tests, UI typecheck and toke
 gates pass. The native browser journey passes again (39.6 seconds, 51.9 seconds
 including setup), including two views, company changes, socket recovery, terminal
 catch-up, reload and exactly one business comment.
+
+### Agent Detail event preservation (2026-10-24)
+
+A delayed native commit signal could overwrite a full saved event in Agent
+Detail. Both page variants now keep signals out of the merge and require canonical
+history only when their persisted cursor does not cover the signal. Both new
+regressions fail on the prior merge; all eight page regressions, UI typecheck and
+token gates pass. Full live rows still merge without recurring history reads.
+The extended browser journey passes (42.3 seconds; 56.7 seconds including setup),
+covering the existing two-view/reconnect/completion flow plus the agent's run-event
+view and reload. It uses the real runner, deterministic Codex app-server and owned
+Postgres. Run `7fcdcc41-e035-4bca-88ea-0bc079083b03` completed once. This remains
+browser evidence, not live-harness or hosted-upgrade qualification.
