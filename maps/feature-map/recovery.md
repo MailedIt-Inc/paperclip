@@ -170,6 +170,14 @@ and rejected identity evidence. The Runner restart tests require positive exit
 evidence before replacement. This coverage does not prove recovery of a
 historical retained sandbox or behavior during a live provider outage.
 
+For a release change during a remote provider session, verify that reattachment
+uses the controller's admitted pack manifest and runner digest. Check useful
+output from the same process without replaying a turn. Repeat with a modified
+sidecar, mismatched receipt scope, replacement lease, and incompatible runner
+protocol. The [authority tests](../../server/src/services/native-runtime/remote-provider-pack-authority.test.ts)
+and executor wiring regressions cover selection and fail-closed scope checks.
+They do not prove a historical retained sandbox was recovered.
+
 For completion recovery, restart after a native completion proposal is appended
 but before its session checkpoint. Verify that the original result is finalized
 after provider termination, with no new provider turn or repeated external action.
