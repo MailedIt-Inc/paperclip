@@ -634,13 +634,14 @@ message count, and byte limits. It does not dispatch tools, publish trailing
 messages, or propose another work result. The retained receipts and the cleared active turn identity are saved together
 before the stop command returns.
 Repeated stop commands and executor restart preserve the same receipt events.
-A durable `stop_receipts_pending` fence precedes consumption of shutdown output.
-A failed or interrupted drain keeps that fence and the original turn identity.
-Stop retry and provider restart cannot certify only a remaining output suffix;
-explicit reconciliation is required. An already owned maintenance stop can
-observe this transient state while its stop command is pending. That observation
-is never settlement proof or permission to admit another maintenance attempt;
-initial admission and final proof still reject the pending fence.
+The private durable `stopReceiptDrainPending` flag precedes consumption of
+shutdown output. A failed or interrupted drain retains that flag and the
+original turn identity. A loaded interrupted drain uses the existing
+`reconciliation_required` lifecycle without restarting the provider. Stop retry
+and provider restart cannot certify only a remaining output suffix; explicit
+reconciliation is required. The receipt events and settled identity are staged
+in a separate state value and persisted together before clearing the flag.
+Existing maintenance admission and settlement checks remain unchanged.
 
 Physical exit does not create a usage receipt or a turn terminal. Missing,
 invalid, or incomplete evidence cannot establish complete accounting. This

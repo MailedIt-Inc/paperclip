@@ -1984,9 +1984,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         } else {
                             finish_turn(&state_path, &mut state, "interrupted")?;
-                            if interrupt_usage_count > 0 {
-                                log_call(call_log.as_deref(), "interrupt-receipts-written")?;
-                            }
+                            log_call(call_log.as_deref(), "interrupt-receipts-written")?;
                         }
                     }
                 }

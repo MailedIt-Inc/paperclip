@@ -337,7 +337,10 @@ it.each([
           },
         });
       }
-      if (stopReceiptsPending) providerBefore.lifecycle = "stop_receipts_pending";
+      if (stopReceiptsPending) {
+        providerBefore.lifecycle = "reconciliation_required";
+        providerBefore.stopReceiptDrainPending = true;
+      }
       await writeFile(providerFile, JSON.stringify(providerBefore));
       await cp(original, copy, { recursive: true });
       const originalProviderHome = homeScoped ? await readFile(fakeState) : null;

@@ -1007,6 +1007,8 @@ struct CodexProviderState {
     #[serde(default)]
     receipt_limit_diagnostic_emitted: bool,
     #[serde(default)]
+    stop_receipt_drain_pending: bool,
+    #[serde(default)]
     receipt_limit_interrupt_pending: bool,
     #[serde(default)]
     receipt_limit_interrupt_accepted: bool,
@@ -1092,6 +1094,7 @@ impl CodexProviderState {
             descendant_thread_ids: std::collections::BTreeSet::new(),
             settled_provider_turn_filter: DurableReplayFilter::default(),
             receipt_limit_diagnostic_emitted: false,
+            stop_receipt_drain_pending: false,
             receipt_limit_interrupt_pending: false,
             receipt_limit_interrupt_accepted: false,
             receipt_limit_interrupt_attempts: 0,
@@ -1132,7 +1135,6 @@ impl CodexProviderState {
                     | "turn_active"
                     | "provider_exited"
                     | "reconciliation_required"
-                    | "stop_receipts_pending"
                     | "closed"
             )
             || self
@@ -1803,11 +1805,25 @@ impl CodexCommandExecutor {
         Ok(())
     }
 
+    fn quarantine_stop_receipt_drain(&mut self) -> Result<(), DurableRunnerError> {
+        if let Some(state) = self.state.as_mut() {
+            if state.stop_receipt_drain_pending && state.lifecycle != "reconciliation_required" {
+                state.lifecycle = "reconciliation_required".to_owned();
+                self.save_state()?;
+            }
+        }
+        Ok(())
+    }
+
     fn restore_provider_if_needed(&mut self) -> Result<(), DurableRunnerError> {
         self.assert_startup_admitted()?;
         let Some(state) = self.state.clone() else {
             return Ok(());
         };
+        if state.stop_receipt_drain_pending {
+            self.quarantine_stop_receipt_drain()?;
+            return Ok(());
+        }
         if self.provider.is_some()
             || !matches!(
                 state.lifecycle.as_str(),
@@ -2310,10 +2326,7 @@ impl CodexCommandExecutor {
     fn ensure_provider(&mut self) -> Result<&mut CodexProvider, DurableRunnerError> {
         self.restore_provider_if_needed()?;
         if self.state.as_ref().is_some_and(|state| {
-            matches!(
-                state.lifecycle.as_str(),
-                "reconciliation_required" | "stop_receipts_pending"
-            )
+            state.stop_receipt_drain_pending || state.lifecycle == "reconciliation_required"
         }) {
             return Err(DurableRunnerError::invalid(
                 "Codex provider session requires explicit reconciliation and a fresh session",
@@ -3182,7 +3195,7 @@ impl CodexCommandExecutor {
         if self
             .state
             .as_ref()
-            .is_some_and(|state| state.lifecycle == "stop_receipts_pending")
+            .is_some_and(|state| state.stop_receipt_drain_pending)
         {
             return Err(DurableRunnerError::invalid(
                 "Codex shutdown receipts require explicit reconciliation",
@@ -3219,7 +3232,7 @@ impl CodexCommandExecutor {
         self.state
             .as_mut()
             .expect("Codex state remains available after provider termination")
-            .lifecycle = "stop_receipts_pending".to_owned();
+            .stop_receipt_drain_pending = true;
         self.save_state()?;
         let receipts = self
             .provider
@@ -3235,10 +3248,11 @@ impl CodexCommandExecutor {
         self.provider = None;
 
         let identity = self.event_identity()?;
-        let state = self
+        let mut next_state = self
             .state
-            .as_mut()
+            .clone()
             .expect("Codex state remains available after provider termination");
+        let state = &mut next_state;
         for (method, params) in receipts {
             let events = normalize_provider_notification(state, &method, &params)?;
             state.extend_terminal_events(events)?;
@@ -3274,7 +3288,9 @@ impl CodexCommandExecutor {
         // fresh provider process. `prepared` retains the durable thread while
         // deferring the only authorized restart to the successor run.attach.
         state.lifecycle = "prepared".to_owned();
-        self.save_state()?;
+        state.stop_receipt_drain_pending = false;
+        self.persist_state(&next_state)?;
+        self.state = Some(next_state);
         Ok(CommandExecution::result(json!({
             "status": if provider_turn_id.is_some() { "stopped" } else { "already_settled" },
             "providerTurnId": provider_turn_id,
@@ -4021,6 +4037,9 @@ impl CodexCommandExecutor {
         if state.ambiguous_turn_start_pending {
             warm_attach_blockers.push("durable_ambiguous_turn_start");
         }
+        if state.stop_receipt_drain_pending {
+            warm_attach_blockers.push("shutdown_receipts_pending");
+        }
         if !state.pending_events.is_empty() {
             warm_attach_blockers.push("durable_pending_events");
         }
@@ -4573,10 +4592,7 @@ impl CommandExecutor for CodexCommandExecutor {
         let outcome = (|| {
             self.restore()?;
             if self.state.as_ref().is_some_and(|state| {
-                matches!(
-                    state.lifecycle.as_str(),
-                    "reconciliation_required" | "stop_receipts_pending"
-                )
+                state.stop_receipt_drain_pending || state.lifecycle == "reconciliation_required"
             }) && !matches!(
                 command.command_type.as_str(),
                 "session.snapshot"
@@ -4643,6 +4659,9 @@ impl CommandExecutor for CodexCommandExecutor {
             }
         })();
         self.startup_command = None;
+        if outcome.is_err() {
+            self.quarantine_stop_receipt_drain()?;
+        }
         outcome
     }
 
@@ -4738,7 +4757,10 @@ impl CommandExecutor for CodexCommandExecutor {
         })?;
         state.validate()?;
         Ok(
-            if state.lifecycle == "prepared" && state.active_provider_turn_id.is_none() {
+            if state.lifecycle == "prepared"
+                && state.active_provider_turn_id.is_none()
+                && !state.stop_receipt_drain_pending
+            {
                 TerminalDeliveryReconciliation::CleanupCompleted
             } else {
                 TerminalDeliveryReconciliation::ProviderCleanupPending
@@ -5647,6 +5669,7 @@ mod tests {
             descendant_thread_ids: std::collections::BTreeSet::new(),
             settled_provider_turn_filter: DurableReplayFilter::default(),
             receipt_limit_diagnostic_emitted: false,
+            stop_receipt_drain_pending: false,
             receipt_limit_interrupt_pending: false,
             receipt_limit_interrupt_accepted: false,
             receipt_limit_interrupt_attempts: 0,

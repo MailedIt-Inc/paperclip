@@ -908,10 +908,6 @@ it("identifies an active provider turn that must stop before suspension", () => 
   expect(runnerdRecoveryInternals.providerDrainStateFromSnapshot({
     activeProviderTurnId: null, pendingEvents: [], providerExitUnconfirmed: true,
   })).toEqual({ pendingEventCount: 0, activeProviderTurnId: null, providerSettled: false });
-  expect(runnerdRecoveryInternals.providerDrainStateFromSnapshot({
-    lifecycle: "stop_receipts_pending", activeProviderTurnId: null,
-    pendingEvents: [], queuedEvents: [],
-  })).toEqual({ pendingEventCount: 0, activeProviderTurnId: null, providerSettled: false });
 });
 
 it.each([

@@ -4475,9 +4475,7 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
     // the provider has aborted, but the runner has not polled its terminal.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let state: Value =
-            serde_json::from_slice(&fs::read(directory.join("fake-state.json")).unwrap()).unwrap();
-        if state["activeTurnId"].is_null() {
+        if call_count(&directory, "interrupt-receipts-written") == 1 {
             break;
         }
         assert!(
@@ -4608,7 +4606,8 @@ fn durable_stop_receipt_limit_remains_fenced_across_retry_and_restart() {
         .is_err());
     let retained = fs::read(directory.join("codex-provider-state.json")).unwrap();
     let state: Value = serde_json::from_slice(&retained).unwrap();
-    assert_eq!(state["lifecycle"], "stop_receipts_pending");
+    assert_eq!(state["lifecycle"], "reconciliation_required");
+    assert_eq!(state["stopReceiptDrainPending"], true);
     assert_eq!(state["activeProviderTurnId"], "provider-turn-1");
     executor.shutdown().unwrap();
     drop(executor);
@@ -4624,6 +4623,29 @@ fn durable_stop_receipt_limit_remains_fenced_across_retry_and_restart() {
     assert_eq!(call_count(&directory, "thread/resume"), 0);
     assert_eq!(call_count(&directory, "turn/start"), 1);
     recovered.shutdown().unwrap();
+    drop(recovered);
+    let mut interrupted_drain = state;
+    interrupted_drain["lifecycle"] = json!("turn_active");
+    fs::write(
+        directory.join("codex-provider-state.json"),
+        serde_json::to_vec(&interrupted_drain).unwrap(),
+    )
+    .unwrap();
+    let mut crashed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    assert_eq!(
+        crashed.reconcile_terminal_delivery().unwrap(),
+        TerminalDeliveryReconciliation::ProviderCleanupPending
+    );
+    let snapshot = crashed
+        .execute(&command("crash-snapshot", 9, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(snapshot.result["warmAttachReady"], false);
+    assert!(crashed
+        .execute(&command("crash-stop", 10, "turn.stop", json!({})))
+        .is_err());
+    assert_eq!(call_count(&directory, "thread/resume"), 0);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    crashed.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 
