@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { appearanceForPalette } from "@paperclipai/shared";
 import { agents, companies, costEvents, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -7,6 +10,10 @@ import { costDataQualityReport, RECEIPT_WAIT_MS } from "../services/cost-data-qu
 import { accountingIntegrityService } from "../services/accounting-integrity.js";
 import { costService } from "../services/costs.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+
+const recoveryMock = vi.hoisted(() => ({ recover: vi.fn() }));
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({ recoverNativeCodexUsageReceipt: recoveryMock.recover }));
+import { captureRecoveredNativeUsageCheckpoint, createRunUsageRecorder } from "../services/usage-receipts.js";
 
 const now = new Date("2026-10-09T13:00:00Z");
 describe("actionable cost data quality", () => {
@@ -212,5 +219,40 @@ describe("actionable cost data quality", () => {
     expect((await costDataQualityReport(db, owner.companyId, true, { allTime: true }, now)).runs).toEqual([]);
     const other = await company();
     await expect(integrity.retry(other.companyId, pending.id, "board")).rejects.toThrow("Accounting run not found");
+  });
+
+  it("routes the board retry through same-source native receipt capture and normal settlement", async () => {
+    const owner = await company(), runId = randomUUID(), spool = await mkdtemp(path.join(tmpdir(), "accounting-retry-recovery-"));
+    try {
+      const [runRow] = await db.insert(heartbeatRuns).values({ ...owner, id: runId, status: "failed", runtimeMode: "native",
+        costAccountingPending: true, createdAt: now, finishedAt: now,
+        usageJson: { accountingProviderWorkStarted: true } }).returning();
+      const recorder = await createRunUsageRecorder(db, { companyId: owner.companyId, runId, adapterType: "paperclip_runner" }, spool);
+      await recorder.capture({ complete: false, provider: "openai", biller: "openai", model: "fixture-model", billingType: "metered_api",
+        usageBasis: "per_run", costStatus: "unpriced", pricingProvenance: { source: "unknown", version: "accounting-receipt/v1" },
+        usage: { inputTokens: 4, outputTokens: 2 } });
+      const state = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runRow.id)))[0]!.usageJson!;
+      recoveryMock.recover.mockImplementationOnce(async (database: typeof db, requestedRunId: string) =>
+        captureRecoveredNativeUsageCheckpoint(database, { companyId: owner.companyId, runId: requestedRunId,
+          sourceFingerprint: "b".repeat(64), expectedSourceId: String(state.accountingReceiptSourceId), expectedSequence: 1,
+          usage: { inputTokens: 80, cachedInputTokens: 20, outputTokens: 10 } }, spool));
+
+      expect(await accountingIntegrityService(db).retry(owner.companyId, runRow.id, "board")).toEqual({ accounted: true });
+      const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runRow.id));
+      expect(settled).toMatchObject({ status: "failed", costAccountingPending: false, usageJson: {
+        accountingReceiptSequence: 2, accountingReceiptReady: true, accountingProviderWorkStarted: true,
+        inputTokens: 80, cachedInputTokens: 20, outputTokens: 10, costUsd: null, costStatus: "unpriced",
+      } });
+      expect(settled.costAccountedAt).not.toBeNull();
+      expect(settled.accountingAttemptCount).toBe(0);
+      expect(settled.usageJson?.accountingCaptureFailed).not.toBe(true);
+      expect(recoveryMock.recover).toHaveBeenCalledOnce();
+      const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runRow.id));
+      expect(charges).toHaveLength(1);
+      expect(charges[0]).toMatchObject({ inputTokens: 80, cachedInputTokens: 20, outputTokens: 10, costStatus: "unpriced" });
+    } finally {
+      recoveryMock.recover.mockReset();
+      await rm(spool, { recursive: true, force: true });
+    }
   });
 });
